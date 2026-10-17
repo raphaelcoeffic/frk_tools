@@ -43,17 +43,21 @@ def parseArgs():
 
     return parser.parse_args()
 
-cmdline = parseArgs()
-rounds = find_rounds(cmdline.capture.read())
+def main():
+    cmdline = parseArgs()
+    rounds = find_rounds(cmdline.capture.read())
 
-if not rounds:
-    sys.exit('error: no complete round with a valid CRC found')
+    if not rounds:
+        sys.exit('error: no complete round with a valid CRC found')
 
-pos, start, data = rounds[0]
-for other_pos, other_start, other_data in rounds[1:]:
-    if (other_start, other_data) != (start, data):
-        sys.exit('error: rounds at offsets %d and %d differ' % (pos, other_pos))
+    pos, start, data = rounds[0]
+    for other_pos, other_start, other_data in rounds[1:]:
+        if (other_start, other_data) != (start, data):
+            sys.exit('error: rounds at offsets %d and %d differ' % (pos, other_pos))
 
-cmdline.outfile.write(data)
-print('0x%08X..0x%08X: %d bytes, %d valid round(s)'
-      % (start, start + len(data), len(data), len(rounds)), file=sys.stderr)
+    cmdline.outfile.write(data)
+    print('0x%08X..0x%08X: %d bytes, %d valid round(s)'
+          % (start, start + len(data), len(data), len(rounds)), file=sys.stderr)
+
+if __name__ == '__main__':
+    main()

@@ -32,6 +32,10 @@ make clean all DUMP_START=0x08002000 DUMP_LENGTH=0xE000
 
 ## Use
 
+With a Raspberry Pi Pico, `../pico/` does steps 1 to 4 below on its own,
+power cycles included if the receiver power goes through a switch. See
+`../pico/README.md`. By hand:
+
 1. Flash `flashdump.frk` to the receiver like any receiver firmware, e.g.
    with EdgeTX's "Flash S.Port device" on the file from the SD card.
 2. Power-cycle the receiver. The bootloader starts the dumper, which sends the

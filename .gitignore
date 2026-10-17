@@ -2,3 +2,9 @@
 *.bin
 *.frk
 *.elf
+
+# Pico build, and traces (an upload trace contains the whole image)
+build/
+*.uf2
+*.log
+__pycache__/
