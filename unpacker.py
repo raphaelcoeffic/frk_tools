@@ -23,6 +23,10 @@ def init_magic_number(n):
 def next_magic_number():
     global magic_number
 
+    # the bootloader substitutes 1 for 0 before every step, not just at init
+    if magic_number == 0:
+        magic_number = 1
+
     magic_number = (0x7FF8A3ED * magic_number + 0x2AA01D31)  & 0xFFFFFFFF
     return magic_number
 
@@ -30,11 +34,14 @@ def next_magic_number():
 # Magic sequence #2: used for the start address of each block
 #
 # M(0): int32 @ offset 24 bytes inside each 2KB block
-# M(1): (0xAA * M(0) + 0x7673) & 0xFFFF
+# M(1): (0xAA * (M(0) & 0xFFFF)) % 0x7673  (0 is replaced by 1 first)
 #
 
 def magic2(seed):
-    return (0xAA * (seed & 0xFFFF) % 0x7673) & 0xFFFF
+    seed = seed & 0xFFFF
+    if seed == 0:
+        seed = 1
+    return (0xAA * seed % 0x7673) & 0xFFFF
 
 
 def get_uint_from_bytes(b,i):

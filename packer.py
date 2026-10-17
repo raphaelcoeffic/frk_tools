@@ -25,6 +25,10 @@ def init_magic_number(n):
 def next_magic_number():
     global magic_number
 
+    # the bootloader substitutes 1 for 0 before every step, not just at init
+    if magic_number == 0:
+        magic_number = 1
+
     magic_number = (0x7FF8A3ED * magic_number + 0x2AA01D31)  & 0xFFFFFFFF
     return magic_number
 
@@ -32,11 +36,14 @@ def next_magic_number():
 # Magic sequence #2: used for the start address of each block
 #
 # M(0): int32 @ offset 24 bytes inside each 2KB block
-# M(1): (0xAA * M(0) + 0x7673) & 0xFFFF
+# M(1): (0xAA * (M(0) & 0xFFFF)) % 0x7673  (0 is replaced by 1 first)
 #
 
 def magic2(seed):
-    return (0xAA * (seed & 0xFFFF) % 0x7673) & 0xFFFF
+    seed = seed & 0xFFFF
+    if seed == 0:
+        seed = 1
+    return (0xAA * seed % 0x7673) & 0xFFFF
 
 
 def get_uint_from_bytes(b,i):
@@ -78,10 +85,10 @@ def parseArgs():
                         help='Start Address (ex: 0x08002000, 0x00008000)')
 
     parser.add_argument('infile', nargs='?', type=argparse.FileType('rb'),
-                        default=sys.stdin)
+                        default=sys.stdin.buffer)
     
     parser.add_argument('outfile', nargs='?', type=argparse.FileType('wb+'),
-                        default=sys.stdout)
+                        default=sys.stdout.buffer)
 
     args = parser.parse_args()
     return args
@@ -106,8 +113,11 @@ while True:
     if len(buffer) == 0:
         break
 
-    if len(buffer) < 1024:
-        buffer = buffer + bytes(0xFF for i in range(1024 - len(buffer)))
+    # the bootloader only flashes 'block size' bytes, so the last block
+    # keeps its real length (padding is never written)
+    block_size = len(buffer)
+    if block_size < 1024:
+        buffer = buffer + bytes(0xFF for i in range(1024 - block_size))
 
     if magic_init:
         init_magic_number(MAGIC_KEY_START)
@@ -116,7 +126,7 @@ while True:
     out = bytes(0x13E) + buffer + bytes(1024 - 0x13E)
     out = get_uints_from_bytes(out)
 
-    out[0] = 1024       # block size
+    out[0] = block_size # block size
     out[1] = addr       # start address
     out[3] = 0x13E - 32 # start offset - 32
 
