@@ -1,0 +1,4 @@
+# Firmware images (FrSky's aren't ours to distribute) and build outputs
+*.bin
+*.frk
+*.elf
