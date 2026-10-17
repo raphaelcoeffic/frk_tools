@@ -70,6 +70,9 @@ while True:
 
     buffer = infile.read(2048)
     if len(buffer) != 2048:
+        if len(buffer) > 0:
+            print('warning: %d trailing bytes ignored (truncated file?)'
+                  % len(buffer), file=sys.stderr)
         break
 
     init_magic_number(get_uint_from_bytes(buffer, MAGIC_KEY_OFFSET))
