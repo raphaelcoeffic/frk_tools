@@ -8,22 +8,35 @@ uploader side is implemented in EdgeTX
 (`radio/src/io/frsky_firmware_update.cpp`,
 `FrskyDeviceFirmwareUpdate::uploadFileNormal()`).
 
-The same bootloader serves the ACCST-generation STM32 devices: X4R, X8R, XSR,
-R161 and the XJT modules, among others. ACCESS-generation devices (RX6R
+It has been checked against a second dump, the bootloader of an XSR. The two
+are builds of the same source: the code is the same at different addresses,
+except for the version reply and some code nothing uses. See
+[Differences between builds](#differences-between-builds). The XSR was also
+run through the whole protocol with `pico/`, which checks every frame against
+this document and timestamps it; the timings given here come from there.
+
+The same bootloader source serves the ACCST-generation STM32 devices: X4R,
+X8R, XSR, R161 and the XJT modules, among others. ACCESS-generation devices (RX6R
 ACCESS, G-RX8, ISRM, Archer X…) use the same `.frk` scrambling. But they run on
 TI CC26xx chips (flash at `0x00000000`, application at `0x00008000` or
 `0x00009000`), with a different bootloader. See
 [ACCESS (CC26xx) bootloader differences](#access-cc26xx-bootloader-differences)
 for what is known about it.
 
-Addresses in brackets (e.g. `[0x08000632]`) point to the code in the
-bootloader where the behaviour can be checked.
+Addresses in brackets (e.g. `[0x08000632]`) point to the code in the X4R
+build where the behaviour can be checked.
+[Differences between builds](#differences-between-builds) gives the matching
+addresses in the XSR build.
 
 ## Physical layer
 
 - Single-wire, half-duplex S.Port line, 57600 baud `[0x080012a0]`, 8N1.
 - The bootloader drives a transmit-enable pin (PA2, from the config page) high
   while sending and low otherwise `[0x080005bc]`.
+- It answers fast. Measured on an XSR, the first byte of a reply ends 183 to
+  200 µs after the host's last stop bit. One byte takes 174 µs, so the reply
+  starts 9 to 26 µs after the host's frame. A host has to release the line
+  right after its last stop bit, or it garbles the start of the reply.
 - The bootloader listens on one USART (USART3 in this image, from the config
   page). A second USART can be enabled in the config page, but isn't here.
 
@@ -131,6 +144,13 @@ So the host has to power-cycle the device and send `REQ_POWERUP` right away,
 repeatedly. EdgeTX turns S.Port power off for 2 s, turns it back on, then sends
 `REQ_POWERUP` up to 10 times, 100 ms apart.
 
+Measured on an XSR powered through a switch, with `REQ_POWERUP` every 30 ms
+from the moment power is on: the first one never gets an answer, and the
+second one, 33 ms after power-on, does (same in all three sessions recorded). So the bootloader isn't
+listening yet right at power-on, but is within about 30 ms. That first frame
+doesn't spoil the attempt either: the bootloader doesn't count it as its one
+frame. How long the window stays open wasn't measured.
+
 ### Handshake
 
 In bootloader mode, the bootloader sends `ACK_POWERUP` once. It then ignores
@@ -140,17 +160,23 @@ states.
 
 Because each ACK is sent only once, a host that misses one can't get it back by
 repeating its request: the bootloader has already moved on to the next state.
+On an XSR, sending `REQ_POWERUP` again after `ACK_POWERUP`, or `REQ_VERSION`
+again after `ACK_VERSION`, indeed gets no reply.
 
 #### Version reply
 
-| Bytes | Content                                                        |
-|-------|----------------------------------------------------------------|
-| 2..3  | low 16 bits of the word at `0x08001E00` (`0xFFFF` in this dump) |
-| 4..5  | low 16 bits of the word at `0x08002020` (in the application's vector table) |
+The contents depend on the bootloader build:
 
-EdgeTX ignores the contents. See
-[What the bootloader reveals](#what-the-bootloader-reveals) for what these
-values are in practice.
+| Bytes | X4R build `[0x08000500]`, `[0x08000516]`                       | XSR build `[0x080001ee]` |
+|-------|----------------------------------------------------------------|--------------------------|
+| 2..3  | low 16 bits of the word at `0x08001E00` (`0xFFFF` in this dump) | low 16 bits of the word at `0x08001C08` (config page, `0x12345678`) |
+| 4..5  | low 16 bits of the word at `0x08002020` (in the application's vector table) | high 16 bits of the same word |
+
+So an XSR answers `78 56 34 12` whatever firmware is installed (checked with
+an official v2.1.0 installed, whose word at `0x08002020` is `0x0014`). A host
+can't rely on the contents. EdgeTX ignores them. See
+[What the bootloader reveals](#what-the-bootloader-reveals) for what the X4R
+build's values are in practice.
 
 ### Data transfer `[0x08000774]`, `[0x080016e8]`
 
@@ -172,7 +198,11 @@ values are in practice.
   block it has just received and writes it to flash (see below), then
   requests the next word. Erasing and programming happen before that next
   request goes out, so the host should allow for some latency there (EdgeTX
-  waits up to 80 ms, with retries).
+  waits up to 80 ms, with retries). On an XSR it takes 51.05 to 51.08 ms,
+  against about 0.2 ms for any other request.
+
+Measured on an XSR, a 64 KB image takes 62 s: 3.8 ms per word, nearly all of
+it the two frames on the line (10 bytes each way at 57600 baud).
 
 ### End of transfer
 
@@ -232,11 +262,11 @@ Flash programming `[0x0800087c]`:
 The bootloader code is generic and gets its board-specific settings from this
 page:
 
-| Offset | Value in this dump | Meaning                                           |
+| Offset | Value in the dumps | Meaning                                           |
 |--------|--------------------|---------------------------------------------------|
 | `0x00` | `0x08002000`       | application start address (vector table)          |
 | `0x04` | `0xF7FFDFFF`       | bitwise complement of the above                   |
-| `0x08` | `0x12345678`       | (not used by the code)                            |
+| `0x08` | `0x12345678`       | sent as the version reply by the XSR build; not used by the X4R build |
 | `0x0C` | `0x9ABCDEF0`       | "application valid" magic                         |
 | `0x14` | GPIOB, pin 9       | LED                                               |
 | `0x1C` | GPIOB, pin 8       | LED                                               |
@@ -249,19 +279,25 @@ check always passes unless a `.frk` overwrites the page. A second record with
 the same shape at `0x08001C70` (application at `0x08005800`) isn't referenced
 by the code.
 
+The X4R and XSR dumps have byte-identical config pages
+(`0x08001C00`–`0x08001FFF`).
+
 ## What the bootloader reveals
 
-The bootloader has no command for reading memory. It gives nothing away about
-the installed firmware beyond the two 16-bit values in the version reply:
+The bootloader has no command for reading memory. The X4R build gives nothing
+away about the installed firmware beyond the two 16-bit values in the version
+reply, and the XSR build gives nothing at all:
 
 - `0x80` and `0x83` carry only zeros, `0x82` carries the bootloader's own byte
   counter, and `0x84` is never sent. Nothing reports a checksum or verifies
   what was flashed.
 - The version reply's two values are the only flash reads the protocol can
   trigger `[0x08000500]`, `[0x08000516]`. Two other flash read/write helpers
-  exist (`0x08001a50`, `0x08001a5c`), but nothing calls them.
+  exist in the X4R build (`0x08001a50`, `0x08001a5c`), but nothing in the
+  bootloader calls them. See
+  [Differences between builds](#differences-between-builds).
 
-What the two values are in practice:
+What the two values of the X4R build are in practice:
 
 - **Bytes 2..3** (word at `0x08001E00`): inside the bootloader's 8 KB, and
   never written by the bootloader. It is erased (`0xFFFF`) both in the
@@ -277,7 +313,8 @@ What the two values are in practice:
   | R9M, R9M 2019, R9 Slim+ OTA                                       | `0x0000` |
 
   It is a product-class marker. It doesn't change between versions or
-  regions, and doesn't tell an X4R from an X8R.
+  regions, and doesn't tell an X4R from an X8R. A device with the XSR build
+  doesn't report it at all.
 
 So the installed firmware can't be identified through the bootloader. Reading
 more means flashing code onto the device. `flashdump/` does this, but replaces
@@ -287,6 +324,55 @@ the real firmware. That is risky, though: a power cut while the page is erased
 leaves the bootloader reading its UART settings from blank flash, and with
 readout protection on, recovery needs a mass erase, which also wipes the
 bootloader.
+
+## Differences between builds
+
+The XSR's bootloader (dumped with `flashdump/`) differs from the X4R's in
+6636 of its 8192 bytes, but almost all of that is the same code at other
+addresses. Comparing the instructions while ignoring addresses, the code at
+17 of the 20 X4R addresses cited here is identical in the XSR build:
+
+| X4R          | XSR          | What                                   |
+|--------------|--------------|----------------------------------------|
+| `0x0800023c` | `0x08000618` | CRC-16                                 |
+| `0x08000278` | `0x08000654` | frame receive, ID check                |
+| `0x08000464` | `0x08000154` | wait for a byte, with timeout          |
+| `0x08000500`, `0x08000516` | `0x080001ee` | version reply (differs, see below) |
+| `0x08000582` | `0x0800027a` | `DATA_CRC_ERR` frame                   |
+| `0x080005aa` | `0x080002a2` | reply CRC (high byte)                  |
+| `0x080005bc` | `0x080002b4` | transmit enable                        |
+| `0x08000632` | `0x0800032a` | receive a command                      |
+| `0x08000740` | `0x08000438` | ID check                               |
+| `0x08000744` | `0x0800043c` | CRC check (low byte)                   |
+| `0x08000774` | `0x0800046c` | data transfer                          |
+| `0x0800084c` | `0x08001418` | readout and write protection           |
+| `0x0800087c` | `0x08001448` | flash programming                      |
+| `0x080012a0` | `0x08000ef0` | USART setup, 57600 baud                |
+| `0x0800151c` | `0x08001270` | entry (differs, see below)             |
+| `0x080016e8` | `0x080014c4` | block handling                         |
+| `0x08001714` | `0x080014f0` | partial block flag (`0x20001458` in both, never written) |
+| `0x0800172c` | `0x08001508` | blocks below `0x08001C00` skipped      |
+| `0x080017d4` | `0x080015b0` | descrambling                           |
+
+The constants are the same too: the 400 000-iteration boot timeout, the
+22-byte limit, the LCG constants, the `0x9ABCDEF0` magic, and the flash unlock
+keys. The config pages are byte-identical.
+
+What differs:
+
+- **Version reply.** The X4R build sends the low halves of the words at
+  `0x08001E00` and `0x08002020`, read through a one-instruction helper at
+  `0x080008f8`. The XSR build sends the word at `0x08001C08` (config page
+  offset `0x08`), read directly. See [Version reply](#version-reply).
+- **A table at `0x08000400`, X4R build only.** It holds two magic words
+  (`0x55AAAA55`, `0x5A5AA5A5` at `0x08000438`) and pointers to the read/write
+  helpers at `0x08001a50` and `0x08001a5c`: probably an entry-point table for
+  the application. The entry code `[0x0800151c]` checks the magic words and
+  passes the result to the protection setup `[0x0800084c]`, which ignores it.
+  The XSR build has neither the table, the helpers, nor that check. The code
+  from `0x080008fc` to `0x08000a22` is in the X4R build only as well; it
+  hasn't been analysed.
+- The C runtime startup code differs slightly.
 
 ## Notes on the EdgeTX implementation
 
