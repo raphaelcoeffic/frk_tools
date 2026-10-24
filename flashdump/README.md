@@ -84,3 +84,39 @@ settings: USART3 on PB10/PB11, transmit enable on PA2.
 
 It also switches the clock back to the internal 8 MHz oscillator, so the baud
 rate doesn't depend on how the bootloader left the clocks.
+
+## CC26x0 (CC2650) devices
+
+`main_cc26x0.c` does the same for the TI CC2650 devices running FrSky's
+CC26xx bootloader with the application at `0x00008000`, e.g. the XJT-Lite:
+
+```
+make TARGET=cc26x0
+```
+
+This produces `flashdump_cc26x0.frk`, which dumps the whole 128 KB flash:
+the 32 KB bootloader, whatever is left of the application, and the last page
+with the CCFG. Reading it from code works even with the debug port locked.
+Nothing is written. One round takes about 23 s.
+
+These bootloaders have no config page: the pins are compiled into TI-RTOS
+board tables. So they are build options:
+
+| Option      | Default | Meaning                                         |
+|-------------|---------|-------------------------------------------------|
+| `TX`        | 29      | DIO driven by UART0 TX                          |
+| `TX2`       | -1      | second DIO with the same output, -1 for none    |
+| `TX_ENABLE` | 24      | DIO held low while sending, -1 for none         |
+
+- **XJT-Lite** (defaults, tested): the bootloader's UART is TX on DIO29, RX
+  on DIO30. DIO29 goes through an inverting 3-state buffer (marked "C40R",
+  LVC2G240-like) and 68 ohms to the S.Port pin. The buffer's output enable
+  has a 10k pull-up and is driven by DIO24: low while sending, as the
+  bootloader does. The dump then comes out on S.Port like the bootloader's
+  replies (default polarity of `pico/`). With `TX2=25` it also comes out on
+  the "TX" test pad, inverted too.
+- **RX6R**: `make TARGET=cc26x0 TX=25`, from its bootloader. Not tested with
+  this dumper.
+
+The application area is erased only where the dumper is written (the first
+4 KB sector), so the rest of the installed firmware is still in the dump.
