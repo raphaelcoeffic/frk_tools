@@ -17,9 +17,10 @@ this document and timestamps it; the timings given here come from there.
 
 The same bootloader source serves the ACCST-generation STM32 devices: X4R,
 X8R, XSR, R161 and the XJT modules, among others. ACCESS-generation devices (RX6R
-ACCESS, G-RX8, ISRM, Archer X…) use the same `.frk` scrambling. But they run on
-TI CC26xx chips (flash at `0x00000000`, application at `0x00008000` or
-`0x00009000`), with a different bootloader. See
+ACCESS, G-RX8, ISRM, Archer X…), and later ACCST ones like the XJT-Lite, use
+the same `.frk` scrambling. But they run on TI CC26xx chips (flash at
+`0x00000000`, application at `0x00008000` or `0x00009000`), with a different
+bootloader. See
 [ACCESS (CC26xx) bootloader differences](#access-cc26xx-bootloader-differences)
 for what is known about it.
 
@@ -389,11 +390,18 @@ What differs:
 
 ## ACCESS (CC26xx) bootloader differences
 
-This section comes from a single dump: the 36 KB bootloader of an ISRM-S
-module from an X10S (TI CC2650, application at `0x00009000`). Addresses in
-brackets refer to that dump. Other ACCESS devices, e.g. those with their
-application at `0x00008000`, have a different bootloader layout and may
-differ further.
+This section comes from two dumps, both TI CC2650:
+
+- the 36 KB bootloader of an ISRM-S upgrade module from an X10S, application
+  at `0x00009000`. Addresses in brackets refer to this dump, except in
+  [XJT-Lite](#xjt-lite);
+- the 32 KB bootloader of an XJT-Lite module, application at `0x00008000`,
+  dumped with `flashdump/` (`make TARGET=cc26x0`). See [XJT-Lite](#xjt-lite).
+
+The two are builds of the same source. `0x00008000` is the usual application
+address. The upgrade ISRM moves it to `0x00009000` so that firmware for a
+built-in ISRM can't be flashed onto an upgrade module: its bootloader drops
+every block below `0x00009000` (see **Flash targets** below).
 
 It speaks the same protocol (same frames, same commands `0x80`–`0x84`, same
 `.frk` scrambling) and has the same overall flow. These are the differences
@@ -421,3 +429,46 @@ found:
 
 Like the STM32 bootloader, it has no command for reading memory, so it can't
 identify the installed firmware either.
+
+### XJT-Lite
+
+The XJT-Lite's bootloader (`0x00000000`–`0x00007FFF`) has the same routines
+as the ISRM-S one, mostly at nearby addresses. Addresses in brackets refer to
+the XJT-Lite dump. What it adds or does differently:
+
+- **Entry** `[0x00001ba8]`: it first runs the anti-cloning check below
+  `[0x00002614]`. Then it listens once for a frame `[0x00001eac]`. Only a
+  valid `REQ_POWERUP` keeps it in the bootloader. A timeout, garbage or any
+  other command makes it jump to the application `[0x00001c34]`: SP from
+  `0x00008000`, PC from `0x00008004`.
+- **Anti-cloning check** `[0x00002614]`: the same routine as in the RX6R's
+  bootloader. It compares a word at `0x00007FF4` with a value computed from
+  the chip's IEEE 802.15.4 address (FCFG1 `0x500012F0`). It also checks a
+  flag word at `0x0000003C` in the vector table (`0xFFFFFFFA`). If
+  `0x00007FF4` is still erased, it is written. If it doesn't match (a
+  bootloader copied to another chip), the first application sector
+  (`0x00008000`) is erased. Writing a dumped bootloader back to the same chip
+  passes the check.
+- **Flash targets** `[0x000036a4]`: `0x00008000`–`0x0001EFFF`, or exactly
+  `0x0001FC00`, like the ISRM-S with the lower bound moved.
+- **S.Port line**: UART0, TX on DIO29, RX on DIO30. These come from the
+  TI-RTOS UART attributes `[0x000053a4]` and pin table `[0x00005400]`; there
+  is no config page as on the STM32. On the board, DIO29 feeds an inverting
+  3-state buffer (marked "C40R", LVC2G240-like), which drives the S.Port pin
+  through 68 Ω. The buffer's output enable has a 10 kΩ pull-up and is driven
+  by DIO24. To send a frame `[0x000016f0]`, the bootloader clears the UART's
+  RXE, drives DIO24 low `[0x00004db4]`, sends, waits for BUSY to clear, then
+  drives DIO24 high `[0x00004da4]`. DIO24 isn't in its pin table, but the
+  write takes effect: the replies only reach S.Port while DIO24 is low
+  (checked with `flashdump/`).
+- **CCFG template** `[0x00007fa8]`: the bootloader image contains a CCFG-like
+  block with the CPU DAP enabled (TAP_DAP_0 `0xFFC500C5`). The module's real
+  CCFG has every TAP disabled (`0xFF000000`). How this template relates to
+  the `0x0001FC00` handling hasn't been looked into.
+- **Measured with `pico/`**:
+  - `ACK_POWERUP` comes 34–35 ms after power-on.
+  - Replies start about 230 µs after the host's frame.
+  - The version reply is `0x0000 0x0000`.
+  - Writing a block takes 5–18 ms.
+  - The bootloader misses a few data words per upload; the uploader resends
+    them after its timeout.
