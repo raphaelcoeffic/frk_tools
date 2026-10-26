@@ -66,6 +66,17 @@ blocks = 0
 infile  = open(sys.argv[1], 'rb')
 outfile = open(sys.argv[2], 'wb+')
 
+# .frsk files start with a 16-byte FrSkyFirmwareInformation header
+# (fourcc 'FRSK'); the scrambled blocks follow it, as in a plain .frk
+header = infile.read(16)
+if header[:4] == b'FRSK':
+    print('frsk: header v%d; firmware %d.%d.%d; size: %d; family: 0x%02X; product: 0x%02X; crc: 0x%04X'
+          % (header[4], header[5], header[6], header[7],
+             int.from_bytes(header[8:12], 'little'), header[12], header[13],
+             int.from_bytes(header[14:16], 'little')))
+else:
+    infile.seek(0)
+
 while True:
 
     buffer = infile.read(2048)
