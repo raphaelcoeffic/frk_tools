@@ -22,7 +22,9 @@ the same `.frk` scrambling. But they run on TI CC26xx chips (flash at
 `0x00000000`, application at `0x00008000` or `0x00009000`), with a different
 bootloader. See
 [ACCESS (CC26xx) bootloader differences](#access-cc26xx-bootloader-differences)
-for what is known about it.
+for what is known about it. Newer receivers such as the Archer Plus SR10+
+run on Silicon Labs EFR32 chips, again with the same scrambling and protocol;
+see [Archer Plus (EFR32)](#archer-plus-efr32).
 
 Addresses in brackets (e.g. `[0x08000632]`) point to the code in the X4R
 build where the behaviour can be checked.
@@ -472,3 +474,28 @@ the XJT-Lite dump. What it adds or does differently:
   - Writing a block takes 5–18 ms.
   - The bootloader misses a few data words per upload; the uploader resends
     them after its timeout.
+
+## Archer Plus (EFR32)
+
+The Archer Plus SR10+ (and R10+) runs on a Silicon Labs EFR32 Series 2 chip,
+most likely an EFR32xG22 (Cortex-M33, 32 KB RAM, 512 KB flash). Its firmware
+comes as `.frsk` files, whose blocks are scrambled like a `.frk`'s. The
+bootloader occupies `0x00000000`–`0x00007FFF` and starts the application at
+`0x00008000`. It was dumped with `flashdump/` (`make TARGET=efr32xg22`) but
+hasn't been analysed yet. What was seen from the outside, with `pico/`:
+
+- **Protocol**: the same frames and commands, and the same flow as above.
+- **`ACK_POWERUP`** comes 34–35 ms after power-on, with a non-zero argument:
+  `0x10004002`, i.e. the bytes `02 40 00 10`. The first two are the product
+  family and ID of the `.frsk` header. The same four bytes are stored at
+  `0x0007E000`, the only data in flash outside the bootloader and the
+  application.
+- **Version reply**: `0x0000 0x0000`.
+- Replies start about 200 µs after the host's frame.
+- Writing a block takes 4–16 ms. No data word was missed (no retries) over a
+  244 KB upload.
+- Flash pages are 8 KB: an image written at `0x00008000` erases only the
+  pages it covers, as on the CC26xx.
+- **S.Port line** (from the application, confirmed with `flashdump/`): USART0,
+  TX on PB00, RX on PB01, PB04 low while sending. The USART doesn't invert:
+  the line driver outside the chip does.
