@@ -7,6 +7,8 @@
 #                                   128 KB flash, bootloader and CCFG included)
 #   make TARGET=cc26x0 TX=25
 #                                -> same, for an RX6R
+#   make TARGET=efr32xg22        -> flashdump_efr32xg22.frk (EFR32xG22, e.g. SR10+:
+#                                   dumps the whole flash, size from DEVINFO)
 
 CROSS   ?= arm-none-eabi-
 CC      := $(CROSS)gcc
@@ -15,6 +17,7 @@ SIZE    := $(CROSS)size
 PYTHON  ?= python3
 
 TARGET ?= stm32f1
+CPU    := cortex-m3
 
 ifeq ($(TARGET),stm32f1)
 NAME        := flashdump
@@ -33,11 +36,23 @@ TX          ?= 29
 TX2         ?= -1
 TX_ENABLE   ?= 24
 CFLAGS_TARGET := -DDIO_TX=$(TX) -DDIO_TX2=$(TX2) -DDIO_TX_ENABLE=$(TX_ENABLE)
+else ifeq ($(TARGET),efr32xg22)
+NAME        := flashdump_efr32xg22
+SRC         := main_efr32xg22.c
+CPU         := cortex-m33
+APP_ADDR    := 0x00008000
+DUMP_START  ?= 0x00000000
+# 0: the whole flash, size from DEVINFO
+DUMP_LENGTH ?= 0
+# S.Port pins as port * 16 + pin (-1: none): SR10+ by default
+TX          ?= 0x10
+TX_ENABLE   ?= 0x14
+CFLAGS_TARGET := -DPIN_TX=$(TX) -DPIN_TX_ENABLE=$(TX_ENABLE)
 else
-$(error TARGET must be stm32f1 or cc26x0)
+$(error TARGET must be stm32f1, cc26x0 or efr32xg22)
 endif
 
-CFLAGS := -mcpu=cortex-m3 -mthumb -Os -std=c99 -Wall -Wextra \
+CFLAGS := -mcpu=$(CPU) -mthumb -Os -std=c99 -Wall -Wextra \
           -ffreestanding -fno-tree-loop-distribute-patterns \
           -ffunction-sections -fdata-sections \
           -fno-delete-null-pointer-checks \

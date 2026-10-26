@@ -120,3 +120,38 @@ board tables. So they are build options:
 
 The application area is erased only where the dumper is written (the first
 4 KB sector), so the rest of the installed firmware is still in the dump.
+
+## EFR32xG22 devices
+
+`main_efr32xg22.c` does the same for the Silicon Labs EFR32xG22 devices
+running FrSky's bootloader with the application at `0x00008000`, e.g. the
+Archer Plus SR10+:
+
+```
+make TARGET=efr32xg22
+```
+
+This produces `flashdump_efr32xg22.frk`, which dumps the whole flash, its
+size read from DEVINFO (512 KB on the SR10+): the 32 KB bootloader, whatever
+is left of the application, and any data pages. One round takes about 91 s,
+so give `pico/`'s `dump` a longer `--timeout` (e.g. 300).
+
+The pins are build options, as port × 16 + pin:
+
+| Option      | Default        | Meaning                                  |
+|-------------|----------------|------------------------------------------|
+| `TX`        | `0x10` (PB00)  | pin driven by USART0 TX                  |
+| `TX_ENABLE` | `0x14` (PB04)  | pin held low while sending, -1 for none  |
+
+- **SR10+** (defaults, tested): taken from the 1.0.10 application, which
+  sends on USART0 (TX PB00, RX PB01) with PB04 low while sending. The USART
+  doesn't invert: the line driver outside the chip does. The dump comes out
+  on S.Port with `pico/`'s default polarity.
+
+Nothing about the state the bootloader leaves is assumed: the dumper resets
+the stack and its limits, turns off the MPU, interrupts and DMA, unlocks the
+clock and GPIO registers, runs from the HFRCO's 19 MHz band with its factory
+calibration, and feeds the watchdog if it runs.
+
+The application area is erased only where the dumper is written (the first
+8 KB page), so the rest of the installed firmware is still in the dump.
