@@ -14,11 +14,13 @@ tool. It does two things:
    dump.
 
 The Pico runs the whole upload session itself. The host only loads the image
-into the Pico's RAM beforehand, so the timing on the line doesn't depend on
-USB latency.
+into the Pico beforehand, so the timing on the line doesn't depend on USB
+latency. The image is kept in the upper half of the Pico's 2 MB flash, not in
+RAM, so it can be up to 512 KB (an SR10+ image is 244 KB).
 
-**Status:** tested with a Waveshare RP2040-Zero and an XSR receiver (`probe`,
-`flash`, `dump`).
+**Status:** tested with a Waveshare RP2040-Zero, an XSR receiver (`probe`,
+`flash`, `dump`) and an Archer Plus SR10+ (`probe`, `flash`, `dump`,
+`capture`).
 
 ## Wiring
 

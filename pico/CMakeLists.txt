@@ -25,7 +25,7 @@ target_compile_definitions(frkpico PRIVATE
 )
 
 target_compile_options(frkpico PRIVATE -Wall -Wextra)
-target_link_libraries(frkpico pico_stdlib hardware_uart hardware_irq)
+target_link_libraries(frkpico pico_stdlib hardware_flash hardware_sync hardware_uart hardware_irq)
 
 pico_enable_stdio_usb(frkpico 1)
 pico_enable_stdio_uart(frkpico 0)

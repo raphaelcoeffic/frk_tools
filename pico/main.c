@@ -1,7 +1,8 @@
 /*
  * S.Port bootloader uploader and capture tool for the Raspberry Pi Pico.
  *
- * The host loads a .frk image into RAM over USB, then the Pico runs the
+ * The host loads a .frk image over USB (it is kept in the Pico's flash),
+ * then the Pico runs the
  * whole upload session described in PROTOCOL.md on its own, so the timing
  * on the S.Port line doesn't depend on USB latency. Every frame from the
  * device is checked against PROTOCOL.md; anything that differs is reported
@@ -22,8 +23,10 @@
 #include <string.h>
 
 #include "pico/stdlib.h"
+#include "hardware/flash.h"
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
+#include "hardware/sync.h"
 #include "hardware/uart.h"
 
 #define VERSION      "frkpico 1"
@@ -45,9 +48,18 @@
 #define UART_IRQ     (SPORT_UART ? UART1_IRQ : UART0_IRQ)
 #define BAUDRATE     57600
 
+/*
+ * The image doesn't fit in RAM next to everything else (an SR10+ image is
+ * 244 KB), so it is kept in the upper half of the Pico's flash, read
+ * through XIP.
+ */
 #ifndef IMAGE_MAX
-#define IMAGE_MAX    (200 * 1024)
+#define IMAGE_MAX    (512 * 1024)
 #endif
+#define IMAGE_FLASH_OFFSET  (1024 * 1024)
+
+_Static_assert(IMAGE_FLASH_OFFSET + IMAGE_MAX <= PICO_FLASH_SIZE_BYTES,
+               "the image area doesn't fit in the flash");
 #define BLOCK_SIZE   2048
 
 /* Frame layout (PROTOCOL.md, "Frame format") */
@@ -93,8 +105,65 @@ enum {
 #define DR_OE        (1u << 11)
 #define DR_ERRORS    (DR_FE | DR_PE | DR_BE | DR_OE)
 
-static uint8_t  image[IMAGE_MAX];
+static const uint8_t *const image = (const uint8_t *)(XIP_BASE + IMAGE_FLASH_OFFSET);
 static uint32_t image_len;
+
+/*
+ * "data" writes go to a RAM copy of one flash sector, written out when
+ * another sector is addressed or the image is used.
+ */
+#define IMAGE_SECTORS  (IMAGE_MAX / FLASH_SECTOR_SIZE)
+
+static uint8_t  sector_buf[FLASH_SECTOR_SIZE];
+static int32_t  sector_cur = -1;                /* sector in sector_buf */
+static uint32_t sector_written[(IMAGE_SECTORS + 31) / 32];
+
+static bool sector_is_written(uint32_t sector)
+{
+    return sector_written[sector / 32] & (1u << (sector % 32));
+}
+
+static void sector_flush(void)
+{
+    uint32_t addr, ints;
+
+    if (sector_cur < 0)
+        return;
+
+    addr = IMAGE_FLASH_OFFSET + (uint32_t)sector_cur * FLASH_SECTOR_SIZE;
+    ints = save_and_disable_interrupts();
+    flash_range_erase(addr, FLASH_SECTOR_SIZE);
+    flash_range_program(addr, sector_buf, FLASH_SECTOR_SIZE);
+    restore_interrupts(ints);
+
+    sector_written[sector_cur / 32] |= 1u << (sector_cur % 32);
+    sector_cur = -1;
+}
+
+static void sector_select(uint32_t sector)
+{
+    if ((int32_t)sector == sector_cur)
+        return;
+
+    sector_flush();
+    if (sector_is_written(sector))
+        memcpy(sector_buf, image + sector * FLASH_SECTOR_SIZE, FLASH_SECTOR_SIZE);
+    else
+        memset(sector_buf, 0xFF, FLASH_SECTOR_SIZE);
+    sector_cur = sector;
+}
+
+/* writes out the pending sector, and 0xFF where "data" never wrote */
+static void image_commit(void)
+{
+    sector_flush();
+    for (uint32_t s = 0; s * FLASH_SECTOR_SIZE < image_len; s++) {
+        if (!sector_is_written(s)) {
+            sector_select(s);
+            sector_flush();
+        }
+    }
+}
 
 static uint32_t image_word(uint32_t off)
 {
@@ -657,6 +726,7 @@ static const char *session(uint32_t boot_timeout_ms, uint32_t off_ms)
 
     if (!image_len)
         return "no image loaded";
+    image_commit();
     if (image_len % BLOCK_SIZE)
         warn("image length %lu isn't a multiple of %d: the last %lu bytes won't be flashed",
              (unsigned long)image_len, BLOCK_SIZE, (unsigned long)(image_len % BLOCK_SIZE));
@@ -872,7 +942,8 @@ static const char *cmd_data(char *args)
             return "bad hex";
         if (off >= image_len)
             return "data beyond the image length";
-        image[off] = hi << 4 | lo;
+        sector_select(off / FLASH_SECTOR_SIZE);
+        sector_buf[off % FLASH_SECTOR_SIZE] = hi << 4 | lo;
     }
     return *hex ? "odd number of hex digits" : NULL;
 }
@@ -918,12 +989,14 @@ int main(void)
             else if (len % 4)
                 err = "length must be a multiple of 4";
             else {
-                image_len = len;
-                memset(image, 0xFF, len);
+                image_len  = len;
+                sector_cur = -1;
+                memset(sector_written, 0, sizeof(sector_written));
             }
         } else if (!strcmp(line, "data")) {
             err = cmd_data(args);
         } else if (!strcmp(line, "crc")) {
+            image_commit();
             printf("OK %08lX %lu\n", (unsigned long)crc32_ieee(image, image_len),
                    (unsigned long)image_len);
             continue;
