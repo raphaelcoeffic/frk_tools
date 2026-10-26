@@ -26,6 +26,13 @@
  * runs. The system clock is the HFRCO in its 19 MHz band, with the factory
  * calibration from DEVINFO, whatever the bootloader used.
  *
+ * With DUMP_EEPROM (make EEPROM=1), it dumps the external I2C EEPROM
+ * instead, from address 0. The bootloader keeps its staged-update flag
+ * there (bytes 0..4). The defaults come from the SR10+ bootloader: SDA on
+ * PB02, SCL on PB03, device 0x50, 2-byte addresses and 128-byte pages, so
+ * 64 KB (a 24C512 or similar). A smaller chip repeats in the dump. The bus
+ * is bit-banged, whatever state the bootloader left the I2C peripheral in.
+ *
  * RX isn't touched: the dumper only sends.
  *
  * Nothing is written to flash here.
@@ -57,6 +64,26 @@
 
 #ifndef PIN_TX_ENABLE
 #define PIN_TX_ENABLE  0x14      /* PB04, low = transmit */
+#endif
+
+#ifndef DUMP_EEPROM
+#define DUMP_EEPROM    0
+#endif
+
+#ifndef PIN_SDA
+#define PIN_SDA        0x12      /* PB02 */
+#endif
+
+#ifndef PIN_SCL
+#define PIN_SCL        0x13      /* PB03 */
+#endif
+
+#ifndef EEPROM_ADDR
+#define EEPROM_ADDR    0x50
+#endif
+
+#ifndef EEPROM_SIZE
+#define EEPROM_SIZE    0x10000u
 #endif
 
 #define PORT(p)      ((uint32_t)(p) >> 4)
@@ -130,8 +157,10 @@
 #define GPIO_MODEL(port)   REG(GPIO_BASE + 0x30u * (port) + 0x004)
 #define GPIO_MODEH(port)   REG(GPIO_BASE + 0x30u * (port) + 0x00C)
 #define GPIO_DOUT(port)    (GPIO_BASE + 0x30u * (port) + 0x010)
+#define GPIO_DIN(port)     REG(GPIO_BASE + 0x30u * (port) + 0x014)
 #define GPIO_LOCK          REG(GPIO_BASE + 0x300)
 #define GPIO_EUART0_ROUTEEN   REG(GPIO_BASE + 0x4C0)
+#define GPIO_I2C_ROUTEEN(n)   REG(GPIO_BASE + 0x490 + 0x10u * (n))
 #define GPIO_USART0_ROUTEEN   REG(GPIO_BASE + 0x61C)
 #define GPIO_USART0_TXROUTE   REG(GPIO_BASE + 0x634)
 #define GPIO_USART1_ROUTEEN   REG(GPIO_BASE + 0x63C)
@@ -139,6 +168,7 @@
 #define GPIO_LOCK_UNLOCK         0xA534u
 #define GPIO_MODE_INPUT          1u
 #define GPIO_MODE_PUSHPULL       4u
+#define GPIO_MODE_WIREDANDPULLUPFILTER 0xBu
 #define GPIO_ROUTEEN_TXPEN       (1u << 4)
 
 /* USART0 */
@@ -275,6 +305,11 @@ static void pin_set(int p, int high)
     REG(GPIO_DOUT(PORT(p)) + (high ? SET : CLR)) = 1u << PIN(p);
 }
 
+static int pin_get(int p)
+{
+    return (GPIO_DIN(PORT(p)) >> PIN(p)) & 1u;
+}
+
 static void tx_enable(int on)
 {
     if (PIN_TX_ENABLE >= 0)
@@ -351,6 +386,136 @@ static void uart_flush(void)
         ;
 }
 
+/*
+ * Bit-banged I2C master, open drain with the pins' pull-ups, ~70 kHz.
+ */
+
+static void i2c_delay(void)
+{
+    for (volatile int i = 0; i < 20; i++)
+        ;
+}
+
+static void i2c_sda(int high)
+{
+    pin_set(PIN_SDA, high);
+    i2c_delay();
+}
+
+static void i2c_scl(int high)
+{
+    pin_set(PIN_SCL, high);
+    /* clock stretching, bounded */
+    for (int i = 0; high && !pin_get(PIN_SCL) && i < 10000; i++)
+        ;
+    i2c_delay();
+}
+
+static void i2c_start(void)
+{
+    i2c_sda(1);
+    i2c_scl(1);
+    i2c_sda(0);
+    i2c_scl(0);
+}
+
+static void i2c_stop(void)
+{
+    i2c_sda(0);
+    i2c_scl(1);
+    i2c_sda(1);
+}
+
+/* returns 1 on ACK */
+static int i2c_write(uint8_t b)
+{
+    int ack;
+
+    for (int i = 0; i < 8; i++, b <<= 1) {
+        i2c_sda(b & 0x80);
+        i2c_scl(1);
+        i2c_scl(0);
+    }
+    i2c_sda(1);
+    i2c_scl(1);
+    ack = !pin_get(PIN_SDA);
+    i2c_scl(0);
+    return ack;
+}
+
+static uint8_t i2c_read(int ack)
+{
+    uint8_t b = 0;
+
+    i2c_sda(1);
+    for (int i = 0; i < 8; i++) {
+        i2c_scl(1);
+        b = (uint8_t)(b << 1 | pin_get(PIN_SDA));
+        i2c_scl(0);
+    }
+    i2c_sda(!ack);
+    i2c_scl(1);
+    i2c_scl(0);
+    i2c_sda(1);
+    return b;
+}
+
+static void i2c_init(void)
+{
+    /* no I2C peripheral on the pins */
+    GPIO_I2C_ROUTEEN(0) = 0;
+    GPIO_I2C_ROUTEEN(1) = 0;
+
+    pin_set(PIN_SDA, 1);
+    pin_set(PIN_SCL, 1);
+    pin_mode(PIN_SDA, GPIO_MODE_WIREDANDPULLUPFILTER);
+    pin_mode(PIN_SCL, GPIO_MODE_WIREDANDPULLUPFILTER);
+
+    /* a transfer may have been cut short: clock the slave out of it */
+    for (int i = 0; i < 9; i++) {
+        i2c_scl(0);
+        i2c_scl(1);
+    }
+    i2c_stop();
+}
+
+/*
+ * Sequential read; 0xFF where the EEPROM doesn't answer (it NACKs its
+ * address while a write cycle is in progress, so retry for a while).
+ */
+static void eeprom_read(uint32_t addr, uint8_t *buf, uint32_t n)
+{
+    for (int tries = 0; tries < 100; tries++) {
+        wdog_feed();
+        i2c_start();
+        if (i2c_write(EEPROM_ADDR << 1) && i2c_write((uint8_t)(addr >> 8))
+            && i2c_write((uint8_t)addr)) {
+            i2c_start();
+            if (i2c_write(EEPROM_ADDR << 1 | 1)) {
+                for (uint32_t i = 0; i < n; i++)
+                    buf[i] = i2c_read(i + 1 < n);
+                i2c_stop();
+                return;
+            }
+        }
+        i2c_stop();
+    }
+    for (uint32_t i = 0; i < n; i++)
+        buf[i] = 0xFF;
+}
+
+static void read_chunk(uint32_t addr, uint8_t *buf, uint32_t n)
+{
+    if (DUMP_EEPROM) {
+        eeprom_read(addr, buf, n);
+    } else {
+        const uint8_t *p = (const uint8_t *)addr;
+
+        for (uint32_t i = 0; i < n; i++)
+            buf[i] = p[i];
+    }
+}
+
 static uint32_t crc32_update(uint32_t crc, uint8_t b)
 {
     crc ^= b;
@@ -382,7 +547,8 @@ static uint32_t dump_length(void)
 
 int main(void)
 {
-    uint32_t length;
+    static uint8_t buf[256];
+    uint32_t start, length;
 
     unlock();
     dma_stop();
@@ -390,11 +556,16 @@ int main(void)
     pins_init();
     uart_init();
 
-    length = dump_length();
+    if (DUMP_EEPROM) {
+        i2c_init();
+        start  = 0;
+        length = EEPROM_SIZE;
+    } else {
+        start  = DUMP_START;
+        length = dump_length();
+    }
 
     for (;;) {
-        const uint8_t *p   = (const uint8_t *)DUMP_START;
-        const uint8_t *end = p + length;
         uint32_t crc = 0xFFFFFFFFu;
 
         tx_enable(1);
@@ -403,12 +574,17 @@ int main(void)
         uart_putc('D');
         uart_putc('M');
         uart_putc('P');
-        uart_put_u32(DUMP_START);
+        uart_put_u32(start);
         uart_put_u32(length);
 
-        while (p < end) {
-            uart_putc(*p);
-            crc = crc32_update(crc, *p++);
+        for (uint32_t off = 0; off < length; off += sizeof(buf)) {
+            uint32_t n = length - off < sizeof(buf) ? length - off : sizeof(buf);
+
+            read_chunk(start + off, buf, n);
+            for (uint32_t i = 0; i < n; i++) {
+                uart_putc(buf[i]);
+                crc = crc32_update(crc, buf[i]);
+            }
         }
 
         uart_put_u32(~crc);

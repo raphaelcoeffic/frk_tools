@@ -9,6 +9,8 @@
 #                                -> same, for an RX6R
 #   make TARGET=efr32xg22        -> flashdump_efr32xg22.frk (EFR32xG22, e.g. SR10+:
 #                                   dumps the whole flash, size from DEVINFO)
+#   make TARGET=efr32xg22 EEPROM=1
+#                                -> flashdump_efr32xg22_eeprom.frk (its I2C EEPROM)
 
 CROSS   ?= arm-none-eabi-
 CC      := $(CROSS)gcc
@@ -37,8 +39,10 @@ TX2         ?= -1
 TX_ENABLE   ?= 24
 CFLAGS_TARGET := -DDIO_TX=$(TX) -DDIO_TX2=$(TX2) -DDIO_TX_ENABLE=$(TX_ENABLE)
 else ifeq ($(TARGET),efr32xg22)
-NAME        := flashdump_efr32xg22
+EEPROM      ?= 0
+NAME        := flashdump_efr32xg22$(if $(filter 1,$(EEPROM)),_eeprom)
 SRC         := main_efr32xg22.c
+LDSCRIPT    := flashdump_efr32xg22.ld
 CPU         := cortex-m33
 APP_ADDR    := 0x00008000
 DUMP_START  ?= 0x00000000
@@ -47,7 +51,7 @@ DUMP_LENGTH ?= 0
 # S.Port pins as port * 16 + pin (-1: none): SR10+ by default
 TX          ?= 0x10
 TX_ENABLE   ?= 0x14
-CFLAGS_TARGET := -DPIN_TX=$(TX) -DPIN_TX_ENABLE=$(TX_ENABLE)
+CFLAGS_TARGET := -DPIN_TX=$(TX) -DPIN_TX_ENABLE=$(TX_ENABLE) -DDUMP_EEPROM=$(EEPROM)
 else
 $(error TARGET must be stm32f1, cc26x0 or efr32xg22)
 endif
@@ -58,11 +62,12 @@ CFLAGS := -mcpu=$(CPU) -mthumb -Os -std=c99 -Wall -Wextra \
           -fno-delete-null-pointer-checks \
           -DDUMP_START=$(DUMP_START)u -DDUMP_LENGTH=$(DUMP_LENGTH)u \
           $(CFLAGS_TARGET)
-LDFLAGS := -nostdlib -nostartfiles -T $(NAME).ld -Wl,--gc-sections
+LDSCRIPT ?= $(NAME).ld
+LDFLAGS := -nostdlib -nostartfiles -T $(LDSCRIPT) -Wl,--gc-sections
 
 all: $(NAME).frk
 
-$(NAME).elf: $(SRC) $(NAME).ld Makefile
+$(NAME).elf: $(SRC) $(LDSCRIPT) Makefile
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SRC)
 	$(SIZE) $@
 

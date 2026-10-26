@@ -148,6 +148,19 @@ The pins are build options, as port × 16 + pin:
   doesn't invert: the line driver outside the chip does. The dump comes out
   on S.Port with `pico/`'s default polarity.
 
+With `EEPROM=1`, it dumps the board's I2C EEPROM instead, from address 0:
+
+```
+make TARGET=efr32xg22 EEPROM=1
+```
+
+This produces `flashdump_efr32xg22_eeprom.frk`. The bootloader keeps its
+staged-update flag in that EEPROM (bytes 0–4), and the application its
+settings. On the SR10+ (defaults, tested) it is a 64 KB part with 2-byte
+addresses at 0x50, SDA on PB02 and SCL on PB03 (`SDA`, `SCL`, `EEPROM_ADDR`
+and `EEPROM_SIZE` in the source). The bus is bit-banged. One round takes
+about 20 s.
+
 Nothing about the state the bootloader leaves is assumed: the dumper resets
 the stack and its limits, turns off the MPU, interrupts and DMA, unlocks the
 clock and GPIO registers, runs from the HFRCO's 19 MHz band with its factory
