@@ -479,23 +479,80 @@ the XJT-Lite dump. What it adds or does differently:
 
 The Archer Plus SR10+ (and R10+) runs on a Silicon Labs EFR32 Series 2 chip,
 most likely an EFR32xG22 (Cortex-M33, 32 KB RAM, 512 KB flash). Its firmware
-comes as `.frsk` files, whose blocks are scrambled like a `.frk`'s. The
-bootloader occupies `0x00000000`–`0x00007FFF` and starts the application at
-`0x00008000`. It was dumped with `flashdump/` (`make TARGET=efr32xg22`) but
-hasn't been analysed yet. What was seen from the outside, with `pico/`:
+comes as `.frsk` files, whose blocks are scrambled like a `.frk`'s. This
+section comes from an SR10+ bootloader dumped with `flashdump/`
+(`make TARGET=efr32xg22`) and from uploads with `pico/`. Addresses in
+brackets refer to that dump.
 
-- **Protocol**: the same frames and commands, and the same flow as above.
-- **`ACK_POWERUP`** comes 34–35 ms after power-on, with a non-zero argument:
-  `0x10004002`, i.e. the bytes `02 40 00 10`. The first two are the product
-  family and ID of the `.frsk` header. The same four bytes are stored at
-  `0x0007E000`, the only data in flash outside the bootloader and the
-  application.
-- **Version reply**: `0x0000 0x0000`.
-- Replies start about 200 µs after the host's frame.
-- Writing a block takes 4–16 ms. No data word was missed (no retries) over a
-  244 KB upload.
-- Flash pages are 8 KB: an image written at `0x00008000` erases only the
-  pages it covers, as on the CC26xx.
+Flash layout:
+
+| Range                       | Contents                                        |
+|-----------------------------|-------------------------------------------------|
+| `0x00000000`–`0x00007FFF`   | bootloader (code ends at `0x00007A37`)          |
+| `0x00007A40`–`0x00007A4B`   | per-chip record, see **Anti-cloning check**     |
+| `0x00008000`–`0x00043FFF`   | application, vector table first                 |
+| `0x00044000`–`0x0007DFFF`   | staging area for over-the-air updates           |
+| `0x0007E000`                | product page: `02 40 00 10`                     |
+
+The board also has a 64 KB I2C EEPROM (I2C0, SDA on PB02, SCL on PB03,
+address `0x50`, 2-byte addresses) `[0x00000ad8]`. The bootloader reads its
+bytes 0–4 (see **Entry**) and `0x80`–`0xC2`, which it doesn't use
+`[0x00000640]`.
+
+It speaks the same protocol (same frames, same commands, same `.frsk`/`.frk`
+scrambling `[0x00001764]`) and has the same overall flow. The bootloader is
+unoptimised code; `main` is at `[0x00000f58]`. These are the differences
+found:
+
+- **Entry** `[0x00000f58]`: it first runs the anti-cloning check below. Then
+  it listens once for a frame `[0x00001414]`. Only a valid `REQ_POWERUP`
+  keeps it in the bootloader. Otherwise:
+  - if EEPROM bytes 0–4 are `A5 3E 68 47 9A`, it copies the staging area
+    over the application, 8 KB at a time (`0x00044000` → `0x00008000`, up to
+    `0x0007DFFF`), sets those 5 bytes back to `FF`, and resets
+    `[0x000006cc]`. This is how over-the-air updates are applied: the
+    application presumably receives the new image into the staging area and
+    sets the flag;
+  - if not, it resets USART0 and I2C0, releases the S.Port line (PB04 high),
+    sets the clocks up (HFXO and DPLL, 80 MHz), points VTOR at
+    `0x00008000`, loads both MSP and PSP from `0x00008000`, and calls the
+    reset handler at `0x00008004` `[0x00000ea4]`, `[0x00000e86]`. There is
+    no "application valid" check.
+- **Anti-cloning check** `[0x00000794]`: it checks its own copyright string
+  at `0x0000741C`. It then compares the 12-byte record at `0x00007A40` with
+  values computed from the chip's EUI-64 (DEVINFO `0x0FE08048` and
+  `0x0FE0804C`) and two more DEVINFO bytes, XORed with "FrSky El". If the
+  record is still erased, it is computed and written, so the bootloader
+  personalises itself on its first boot. If it doesn't match (a bootloader
+  copied to another chip), it turns off the SWD pins (GPIO DBGROUTEPEN = 0,
+  PA01 and PA02 driven low) and hangs `[0x00000760]`. Nothing is erased.
+  Erasing the record should let a dumped bootloader run on another chip
+  (not tested).
+- **`ACK_POWERUP`** `[0x00001550]` carries the first 4 bytes of the product
+  page (`0x10004002`). The first two are the product family and ID of the
+  `.frsk` header. The version reply carries 2 bytes of RAM, zero in
+  practice.
+- **Receiving frames** `[0x00001414]`: it checks the `0x50` frame type and
+  the checksum. The physical ID's parity bits are checked, but the ID itself
+  is ignored. It gives up after 22 bytes, like the STM32 bootloader.
+- **Timeouts** `[0x00001858]`: while waiting for a data word, it doesn't time
+  out and doesn't ask again. Only a word with the wrong offset makes it
+  resend `REQ_DATA_ADDR`. So the host must resend after its own timeout, as
+  with the CC26xx bootloaders.
+- **Flash targets** `[0x00001958]`: a block is written only if its address is
+  `0x00008000` or above and address + size is below `0x0007E000`. Other
+  blocks are silently skipped, which protects the bootloader and the product
+  page.
+- **Erasing** `[0x00000664]`: flash pages are 8 KB. A pointer that starts at
+  `0x00008000` erases pages one at a time, up to the end of each block
+  written. Each page is erased once per upload, but every page from
+  `0x00008000` up to the highest block gets erased, gaps included.
 - **S.Port line** (from the application, confirmed with `flashdump/`): USART0,
-  TX on PB00, RX on PB01, PB04 low while sending. The USART doesn't invert:
-  the line driver outside the chip does.
+  TX on PB00, RX on PB01, PB04 low while sending. The bootloader polls USART0
+  `[0x000013d0]` and drives PB04 the same way `[0x000012a0]`. The USART
+  doesn't invert: the line driver outside the chip does.
+- **Measured with `pico/`**:
+  - `ACK_POWERUP` comes 34–44 ms after power-on.
+  - Replies start about 200 µs after the host's frame.
+  - Writing a block takes 4–16 ms.
+  - No data word was missed (no retries) over 244 KB uploads.
